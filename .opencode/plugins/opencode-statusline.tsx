@@ -23,6 +23,7 @@ interface StatusData {
   cacheHitRate: number
   messageCount: number
   gitBranch: string | undefined
+  sessionId: string
 }
 
 const INITIAL_DATA: StatusData = {
@@ -39,13 +40,13 @@ const INITIAL_DATA: StatusData = {
   cacheHitRate: -1,
   messageCount: 0,
   gitBranch: undefined,
+  sessionId: "",
 }
 
 type WidgetType =
   | "model"
   | "tokens"
   | "speed"
-  | "cost"
   | "context-pct"
   | "context-bar"
   | "git-branch"
@@ -55,6 +56,7 @@ type WidgetType =
   | "total-tokens"
   | "messages"
   | "cache-hit-rate"
+  | "session-id"
   | "separator"
   | "text"
 
@@ -75,32 +77,41 @@ interface StatuslineConfig {
 }
 
 const DEFAULT_CONFIG: StatuslineConfig = {
-  locale: "zh-CN",
+  locale: "en",
   lines: [
+    // Line 1: identity. Mirrors the model + thinking-effort row of Dan's
+    // ccstatusline setup in Claude Code.
     [
       { type: "model", bold: true },
       { type: "separator" },
-      { type: "tokens" },
-      { type: "separator" },
-      { type: "context-pct" },
+      { type: "reasoning" },
     ],
-    [{ type: "context-bar" }],
+    // Line 2: the must-haves. context-bar now carries its own numeric, so the
+    // separate context-pct widget is redundant here.
     [
-      { type: "cost" },
+      { type: "context-bar" },
       { type: "separator" },
-      { type: "speed" },
+      { type: "tokens" },
       { type: "separator" },
       { type: "duration" },
       { type: "separator" },
       { type: "git-branch" },
     ],
+    // Line 3: optionals Dan wanted to see before deciding. `cost` is
+    // deliberately absent: he runs subscription and self-hosted models only, so
+    // a dollar figure is always $0.00 and misleading.
+    [
+      { type: "session-id" },
+      { type: "separator" },
+      { type: "speed" },
+    ],
   ],
 }
 
 const ALL_WIDGET_TYPES: WidgetType[] = [
-  "model", "tokens", "speed", "cost", "context-pct", "context-bar",
+  "model", "tokens", "speed", "context-pct", "context-bar",
   "git-branch", "duration", "reasoning", "cache-write", "total-tokens",
-  "messages", "cache-hit-rate", "separator", "text",
+  "messages", "cache-hit-rate", "session-id", "separator", "text",
 ]
 
 // ─── i18n ────────────────────────────────────────────────────────────────
@@ -203,7 +214,7 @@ const zhCN: Messages = {
   localeTitle: "切换语言 / Switch Language",
   defaultText: "Text",
   widgetLabel: {
-    model: "模型名", tokens: "Token 用量", speed: "生成速度", cost: "累计费用",
+    model: "模型名", tokens: "Token 用量", speed: "生成速度", "session-id": "会话 ID",
     "context-pct": "Context 百分比", "context-bar": "Context 进度条", "git-branch": "Git 分支",
     duration: "会话耗时", reasoning: "思考 tokens", "cache-write": "缓存写入",
     "total-tokens": "总 Token 用量", messages: "消息数", "cache-hit-rate": "缓存命中率",
@@ -214,7 +225,7 @@ const zhCN: Messages = {
 const en: Messages = {
   presets: [
     { title: "Default", description: "Official style: model name in accent + bold, rest default" },
-    { title: "Vibrant", description: "All data highlighted: cost in warning, speed in success, branch in info" },
+    { title: "Vibrant", description: "All data highlighted: speed in success, branch in info" },
     { title: "Subtle", description: "Uniform muted gray, low visual noise" },
     { title: "Clean", description: "No bold, all values in default color" },
   ],
@@ -270,7 +281,7 @@ const en: Messages = {
   localeTitle: "Switch Language",
   defaultText: "Text",
   widgetLabel: {
-    model: "Model", tokens: "Token Usage", speed: "Speed", cost: "Cost",
+    model: "Model", tokens: "Token Usage", speed: "Speed", "session-id": "Session ID",
     "context-pct": "Context %", "context-bar": "Context Bar", "git-branch": "Git Branch",
     duration: "Duration", reasoning: "Reasoning", "cache-write": "Cache Write",
     "total-tokens": "Total Tokens", messages: "Messages", "cache-hit-rate": "Cache Hit Rate",
@@ -308,7 +319,6 @@ const PRESET_COLORS: NamedPreset[] = [
     title: "", description: "",
     colors: {
       model: { color: "accent", bold: true },
-      cost: { color: "warning" },
       speed: { color: "success" },
       duration: { color: "info" },
       "git-branch": { color: "info", bold: true },
@@ -321,7 +331,6 @@ const PRESET_COLORS: NamedPreset[] = [
       model: { color: "muted" },
       tokens: { color: "muted" },
       speed: { color: "muted" },
-      cost: { color: "muted" },
       duration: { color: "muted" },
       "git-branch": { color: "muted" },
       reasoning: { color: "muted" },
@@ -472,11 +481,6 @@ function renderWidget(w: WidgetDef, data: StatusData, theme: TuiThemeCurrent): S
       if (data.speed <= 0) return [seg("— tok/s", muted)]
       return [val(data.speed.toFixed(1), theme.text), seg(" tok/s", muted)]
 
-    case "cost": {
-      const color = data.totalCost > 10 ? theme.error : data.totalCost > 1 ? theme.warning : theme.text
-      return [val(`$${data.totalCost.toFixed(2)}`, color, false, dimBg(color))]
-    }
-
     case "context-pct": {
       if (data.contextPct <= 0) return null
       return [val(`${data.contextPct}%`, contextColor(theme, data.contextPct)), seg(" ctx", muted)]
@@ -484,10 +488,21 @@ function renderWidget(w: WidgetDef, data: StatusData, theme: TuiThemeCurrent): S
 
     case "context-bar": {
       if (data.contextPct <= 0) return null
+      // Numeric rendered INSIDE the bar, e.g. [███ 41% ░░░░░]. Upstream drew a
+      // bare bar and left the number to the separate context-pct widget.
       const width = 15
-      const filled = Math.round((Math.min(data.contextPct, 100) / 100) * width)
-      const bar = "█".repeat(filled) + "░".repeat(width - filled)
-      return [val(bar, contextColor(theme, data.contextPct))]
+      const pct = Math.min(data.contextPct, 100)
+      const filled = Math.round((pct / 100) * width)
+      const cells: string[] = Array.from({ length: width }, (_, i) => (i < filled ? "█" : "░"))
+      const label = ` ${Math.round(pct)}% `
+      const start = Math.max(0, Math.floor((width - label.length) / 2))
+      for (let i = 0; i < label.length && start + i < width; i++) cells[start + i] = label[i]!
+      return [val("[" + cells.join("") + "]", contextColor(theme, pct))]
+    }
+
+    case "session-id": {
+      if (!data.sessionId) return null
+      return [seg("id ", muted), val(data.sessionId.slice(0, 8), theme.text)]
     }
 
     case "reasoning":
@@ -915,7 +930,7 @@ function linePreview(line: WidgetDef[], locale?: Locale): string {
         case "model": return "M"
         case "tokens": return "↑↓"
         case "speed": return "tok/s"
-        case "cost": return "$"
+        case "session-id": return "id"
         case "context-pct": return "%"
         case "duration": return "⏱"
         case "git-branch": return "git"
@@ -1403,6 +1418,7 @@ const tui: TuiPlugin = async (api, options, meta) => {
       if (sessionID !== backfilledSessionID) {
         backfilledSessionID = sessionID
         backfillAttempts = 0
+        setData((prev) => ({ ...prev, sessionId: sessionID }))
       }
       const msgs = api.state.session.messages(sessionID)
       if (msgs.length === 0) {
