@@ -79,31 +79,19 @@ interface StatuslineConfig {
 const DEFAULT_CONFIG: StatuslineConfig = {
   locale: "en",
   lines: [
-    // Line 1: identity. Mirrors the model + thinking-effort row of Dan's
-    // ccstatusline setup in Claude Code.
+    // Exactly what Dan asked for and nothing else. Explicitly NOT included:
+    // git-branch, tokens (up/down), speed, duration and cost - he does not want
+    // them, and every extra widget steals width from the model name in the
+    // narrow sidebar column.
     [
       { type: "model", bold: true },
       { type: "separator" },
       { type: "reasoning" },
     ],
-    // Line 2: the must-haves. context-bar now carries its own numeric, so the
-    // separate context-pct widget is redundant here.
     [
       { type: "context-bar" },
       { type: "separator" },
-      { type: "tokens" },
-      { type: "separator" },
-      { type: "duration" },
-      { type: "separator" },
-      { type: "git-branch" },
-    ],
-    // Line 3: optionals Dan wanted to see before deciding. `cost` is
-    // deliberately absent: he runs subscription and self-hosted models only, so
-    // a dollar figure is always $0.00 and misleading.
-    [
       { type: "session-id" },
-      { type: "separator" },
-      { type: "speed" },
     ],
   ],
 }
@@ -463,9 +451,10 @@ function renderWidget(w: WidgetDef, data: StatusData, theme: TuiThemeCurrent): S
       return w.text ? [seg(w.text, custom ?? theme.text)] : null
 
     case "model": {
-      const name = data.model || "—"
-      const display = name.length > 20 ? name.slice(0, 18) + "…" : name
-      return [val(display, theme.accent, true)]
+      // Rendered in full. Upstream truncated at 20 chars, which turned
+      // "deepseek-v4-flash:cloud (via Ollama)" into "deepseek-v4-flash:…" and
+      // hid exactly the part that distinguishes one Ollama model from another.
+      return [val(data.model || "—", theme.accent, true)]
     }
 
     case "tokens":
@@ -487,7 +476,7 @@ function renderWidget(w: WidgetDef, data: StatusData, theme: TuiThemeCurrent): S
     }
 
     case "context-bar": {
-      if (data.contextPct <= 0) return null
+      if (data.contextPct < 0) return null
       // Numeric rendered INSIDE the bar, e.g. [███ 41% ░░░░░]. Upstream drew a
       // bare bar and left the number to the separate context-pct widget.
       const width = 15
@@ -505,8 +494,13 @@ function renderWidget(w: WidgetDef, data: StatusData, theme: TuiThemeCurrent): S
       return [seg("id ", muted), val(data.sessionId.slice(0, 8), theme.text)]
     }
 
-    case "reasoning":
+    case "reasoning": {
+      // Reasoning TOKENS, not an effort level. The opencode plugin/SDK surface
+      // exposes no reasoning-effort field (only thinkingOpacity, a UI setting),
+      // so a Codex-style "medium" indicator is not obtainable here. Always
+      // rendered, including 0, so the widget never silently vanishes.
       return [seg("R ", muted), val(fmtTokens(data.reasoningTokens), theme.text)]
+    }
 
     case "cache-write":
       return data.cacheWriteTokens > 0
